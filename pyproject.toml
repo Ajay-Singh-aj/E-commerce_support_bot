@@ -1,0 +1,25 @@
+[project]
+name = "shopdesk-ai"
+version = "1.0.0"
+description = "ShopDesk AI - agentic customer-support assistant for e-commerce stores (LangChain 1.x, LangGraph, RAG, human-in-the-loop)"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "streamlit",
+    "langchain[mcp]",
+    "langchain-openai",
+    "openai",
+    "python-dotenv",
+    "langgraph",
+    "langgraph-checkpoint-sqlite",
+    "langchain-community",
+    "chromadb",
+    "langchain-text-splitters",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+packages = ["src/langchain_bot"]
