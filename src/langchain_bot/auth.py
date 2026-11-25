@@ -39,7 +39,8 @@ def lockout_minutes_left(email):
     """Minutes until this email may try again (0 if it is not locked)."""
     with _lock:
         until = _locked_until.get(_key(email), 0)
-    remaining = until - _clock()
+    # Round to whole seconds first: float error (e.g. 900.0000000001 s) must not show as 16 minutes
+    remaining = round(until - _clock())
     return math.ceil(remaining / 60) if remaining > 0 else 0
 
 
