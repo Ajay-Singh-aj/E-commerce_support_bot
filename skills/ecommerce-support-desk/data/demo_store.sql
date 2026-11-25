@@ -33,12 +33,14 @@ CREATE TABLE products (
 );
 
 -- status = PLACED | SHIPPED | DELIVERED | CANCELLED
+-- delivered_at is set for DELIVERED orders; the 30-day return window counts from it.
 CREATE TABLE orders (
   id INTEGER PRIMARY KEY,
   user_id INTEGER NOT NULL,
   status TEXT NOT NULL,
   order_date TEXT NOT NULL,
   total_amount REAL NOT NULL,
+  delivered_at TEXT,
   FOREIGN KEY (user_id) REFERENCES users(id)
 );
 
@@ -52,7 +54,9 @@ CREATE TABLE order_items (
   FOREIGN KEY (product_id) REFERENCES products(id)
 );
 
--- status = PAID | REFUNDED. Partial refunds for returns are stored as extra REFUNDED rows.
+-- status = PAID | REFUNDED | REFUND_PENDING.
+-- Cancelling a PLACED order marks its payment REFUNDED. An approved return adds an extra
+-- REFUND_PENDING row for the item amount; the refund is issued after the item is received and inspected.
 CREATE TABLE payments (
   id INTEGER PRIMARY KEY,
   order_id INTEGER NOT NULL,
@@ -96,6 +100,8 @@ CREATE TABLE tickets (
 );
 
 -- Cancel / return requests paused for human approval in the admin dashboard.
+-- PROCESSING = claimed by an admin while the customer's thread is resumed.
+-- decided_by / decided_at = which admin decided, and when.
 CREATE TABLE pending_actions (
   id INTEGER PRIMARY KEY,
   thread_id TEXT NOT NULL,
@@ -104,9 +110,11 @@ CREATE TABLE pending_actions (
   order_id INTEGER NOT NULL,
   product_name TEXT,
   reason TEXT,
-  status TEXT NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'APPROVED', 'REJECTED')),
+  status TEXT NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'PROCESSING', 'APPROVED', 'REJECTED')),
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
+  decided_by TEXT,
+  decided_at TEXT,
   FOREIGN KEY (order_id) REFERENCES orders(id)
 );
 
@@ -200,6 +208,9 @@ INSERT INTO orders (id, user_id, status, order_date, total_amount) VALUES
   (18, 3, 'CANCELLED', '2026-10-27T14:10:00', 4147.00),
   (19, 1, 'CANCELLED', '2026-10-29T13:00:00', 10195.00),
   (20, 2, 'CANCELLED', '2026-10-28T13:00:00', 6098.00);
+
+-- Delivered orders arrived 4 days after they were placed; all other orders have no delivery date.
+UPDATE orders SET delivered_at = strftime('%Y-%m-%dT%H:%M:%S', order_date, '+4 days') WHERE status = 'DELIVERED';
 
 -- Order lines
 

@@ -78,15 +78,15 @@ def get_my_orders(runtime: ToolRuntime[SessionContext], status: str | None = Non
 
 @tool
 def get_order_details(order_id: int, runtime: ToolRuntime[SessionContext]) -> str:
-    """Details of one of the logged-in customer's orders: the order, its items (exact product name,
-    quantity, unit_price, line_total), payments and returns. Use it to check an order's owner and status
-    and to get the exact product name before a cancel or return."""
+    """Details of one of the logged-in customer's orders: the order (with delivered_at for delivered orders),
+    its items (exact product name, quantity, unit_price, line_total), payments and returns. Use it to check
+    an order's owner, status and return window, and to get the exact product name before a cancel or return."""
     user_email = runtime.context.user_email
 
     with closing(_connect_read_only()) as conn:
         order = conn.execute(
             """
-            SELECT o.id, o.status, o.order_date, o.total_amount
+            SELECT o.id, o.status, o.order_date, o.delivered_at, o.total_amount
             FROM orders o JOIN users u ON u.id = o.user_id
             WHERE o.id = ? AND u.email = ?
             """,

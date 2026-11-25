@@ -1,13 +1,16 @@
 """Logging middleware.
 
-Logs every model call and tool call (SQL, RAG, Gmail MCP, action tools) to the
+Logs every model call and tool call (customer data, RAG, email, action tools) to the
 terminal and to logs/app.log. Each line: timestamp | user_email | action | input | result.
+Email addresses are masked (p***@example.com) and the log file rotates at 5 MB, keeping 3 old files.
 
 Both hooks are normal `def` functions (not async) because the app uses agent.invoke().
 """
 
 import logging
+import re
 from datetime import datetime
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from langchain.agents.middleware import wrap_model_call, wrap_tool_call
@@ -15,11 +18,30 @@ from langchain_core.messages import ToolMessage
 
 LOG_FILE = Path(__file__).resolve().parents[2] / "logs" / "app.log"
 LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+LOG_MAX_BYTES = 5 * 1024 * 1024
+LOG_BACKUPS = 3
+
+_EMAIL = re.compile(r"([A-Za-z0-9])[A-Za-z0-9._%+-]*@([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)")
+
+
+def mask_emails(text):
+    """priya.sharma@example.com -> p***@example.com"""
+    return _EMAIL.sub(r"\1***@\2", str(text))
+
+
+class MaskEmailsFilter(logging.Filter):
+    def filter(self, record):
+        record.msg = mask_emails(record.getMessage())
+        record.args = None
+        return True
+
 
 logger = logging.getLogger("support_agent")
 if not logger.handlers:
     logger.setLevel(logging.INFO)
-    logger.addHandler(logging.FileHandler(LOG_FILE, encoding="utf-8"))
+    logger.addFilter(MaskEmailsFilter())
+    logger.addHandler(RotatingFileHandler(LOG_FILE, maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUPS,
+                                          encoding="utf-8"))
     logger.addHandler(logging.StreamHandler())
 
 

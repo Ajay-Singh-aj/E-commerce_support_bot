@@ -39,3 +39,8 @@ def fail(message, code=1):
 
 def norm_email(email):
     return email.strip().lower()
+
+
+def has_column(conn, table, column):
+    """True if the table has the column (older or custom databases may lack orders.delivered_at)."""
+    return any(r[1] == column for r in conn.execute(f"PRAGMA table_info({table})"))

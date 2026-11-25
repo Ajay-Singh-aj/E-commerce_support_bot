@@ -27,8 +27,9 @@ What you need: Python 3.9+. No API keys, no accounts, no network calls.
 What's included: a fictional demo store (Voltcart: 3 customers, 20 products, 20 orders, INR) so it works
 in 30 seconds, plus a schema reference for connecting your own SQLite database and policy folder.
 
-Limits: SQLite only (export other databases to SQLite). Approving a return records the refund in the
-database; it does not move money through a payment provider. Demo data is fictional.
+Limits: SQLite only (export other databases to SQLite). Approving a return records a pending refund
+(issued after the item is received and inspected); it does not move money through a payment provider.
+Demo data is fictional.
 
 **Example prompts:**
 - "Set up the support desk demo."

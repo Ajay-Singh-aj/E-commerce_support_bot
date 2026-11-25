@@ -124,7 +124,14 @@ tools/build_skill.py       Packages the skill as a marketplace-ready zip
 
 - Only **PLACED** orders can be cancelled; the payment is marked REFUNDED.
 - Only **SHIPPED** or **DELIVERED** orders can be returned, one product per request, with a reason.
-- Return and cancellation requests wait in `pending_actions` until an admin decides.
+  A DELIVERED order can be returned within **30 days** of `orders.delivered_at`.
+- An approved return records the refund as **REFUND_PENDING**: the refund is issued after the item is
+  received and inspected.
+- Return and cancellation requests wait in `pending_actions` until an admin decides. The admin console
+  claims each request atomically (`PROCESSING`), so a second admin or a stale page cannot decide it twice,
+  and records `decided_by` / `decided_at`. Approved returns also store the admin in `returns.admin_id`.
+- The customer's email tool can only send to the logged-in customer. No other Gmail tools are exposed.
+- Logins lock for 15 minutes after 5 failed attempts; a chat session is capped at 30 messages.
 
 ## Roadmap
 

@@ -4,15 +4,16 @@ Run: uv run streamlit run app_admin.py --server.port 8502
 """
 
 import sqlite3
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
 
-from langchain_bot.agent import get_agent, resume_with_decision
-from langchain_bot.auth import authenticate_user
+from langchain_bot.agent import get_agent
+from langchain_bot.auth import authenticate_user, lockout_minutes_left
+from langchain_bot.hitl_utils import AlreadyDecidedError, decide_pending_action
 from langchain_bot.rag_tool import initialize_vector_store
 
 DB_PATH = Path(__file__).resolve().parent / "ecommerce.db"
@@ -26,21 +27,19 @@ def query(sql, params=()):
     return rows
 
 
-def update_pending_status(pending_id, status):
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute(
-        "UPDATE pending_actions SET status = ?, updated_at = ? WHERE id = ?",
-        (status, datetime.now().strftime("%Y-%m-%dT%H:%M:%S"), pending_id),
-    )
-    conn.commit()
-    conn.close()
-
-
 def apply_decision(row, decision, edited_args=None, message=""):
-    with st.spinner("Resuming the customer's conversation..."):
-        result = resume_with_decision(row["thread_id"], decision, edited_args, message)
+    """Claim the request atomically, resume the customer's thread, record who decided.
+    A stale page or a second admin gets 'Already decided by someone else' and nothing changes."""
+    try:
+        with st.spinner("Resuming the customer's conversation..."):
+            result = decide_pending_action(row["id"], decision, st.session_state.admin_email, edited_args, message)
+    except AlreadyDecidedError:
+        st.session_state.last_warning = f"Request #{row['id']}: Already decided by someone else."
+        st.rerun()
+    except Exception as error:
+        st.session_state.last_warning = f"Request #{row['id']} could not be applied and is PENDING again: {error}"
+        st.rerun()
     new_status = "REJECTED" if decision == "reject" else "APPROVED"
-    update_pending_status(row["id"], new_status)
     st.session_state.last_result = f"Request #{row['id']} {new_status}. Agent: {result['messages'][-1].content}"
     st.rerun()
 
@@ -48,7 +47,7 @@ def apply_decision(row, decision, edited_args=None, message=""):
 def show_pending_actions():
     st.subheader("Return / cancel requests")
     col1, col2 = st.columns(2)
-    status = col1.selectbox("Status", ["PENDING", "APPROVED", "REJECTED", "ALL"])
+    status = col1.selectbox("Status", ["PENDING", "PROCESSING", "APPROVED", "REJECTED", "ALL"])
     email = col2.text_input("Customer email (optional)")
 
     sql = "SELECT * FROM pending_actions WHERE 1 = 1"
@@ -72,7 +71,10 @@ def show_pending_actions():
                 f"**#{row['id']} · {row['action_type']}** · Order #{row['order_id']} · "
                 f"{row['user_email']} · **{row['status']}**"
             )
-            st.caption(f"Thread: {row['thread_id']} · Created: {row['created_at']}")
+            caption = f"Thread: {row['thread_id']} · Created: {row['created_at']}"
+            if row.get("decided_by"):
+                caption += f" · Decided by {row['decided_by']} at {row['decided_at']}"
+            st.caption(caption)
             if row["action_type"] == "CREATE_RETURN":
                 st.write(f"Product: {row['product_name']} · Reason: {row['reason']}")
 
@@ -131,6 +133,7 @@ def main():
     st.session_state.setdefault("admin_email", None)
     st.session_state.setdefault("services_ready", False)
     st.session_state.setdefault("last_result", None)
+    st.session_state.setdefault("last_warning", None)
 
     if not st.session_state.admin_email:
         with st.form("admin_login"):
@@ -138,12 +141,21 @@ def main():
             password = st.text_input("Password", type="password")
             submitted = st.form_submit_button("Login")
         if submitted:
-            if authenticate_user(email, password, "admin"):
-                st.session_state.admin_email = email.strip()
+            user = authenticate_user(email, password, "admin")
+            if user:
+                st.session_state.admin_email = user["email"]
                 st.rerun()
+            elif lockout_minutes_left(email):
+                st.error(f"Too many failed logins. Try again in {lockout_minutes_left(email)} minutes.")
             else:
                 st.error("Invalid admin login")
         return
+
+    with st.sidebar:
+        st.write(f"Signed in as **{st.session_state.admin_email}**")
+        if st.button("Logout"):
+            st.session_state.clear()
+            st.rerun()
 
     if not st.session_state.services_ready:
         with st.spinner("Loading services (RAG + Gmail) for the agent..."):
@@ -162,6 +174,9 @@ def main():
     if st.session_state.last_result:
         st.success(st.session_state.last_result)
         st.session_state.last_result = None
+    if st.session_state.last_warning:
+        st.warning(st.session_state.last_warning)
+        st.session_state.last_warning = None
 
     show_pending_actions()
     st.divider()

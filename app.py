@@ -11,12 +11,13 @@ import streamlit as st
 from dotenv import load_dotenv
 
 from langchain_bot.agent import get_agent, get_thread_config
-from langchain_bot.auth import authenticate_user
+from langchain_bot.auth import authenticate_user, lockout_minutes_left
 from langchain_bot.context import SessionContext
 from langchain_bot.hitl_utils import handle_interrupt, has_pending_action_for_thread
 from langchain_bot.rag_tool import initialize_vector_store
 
 THREADS_FILE = Path(__file__).resolve().parent / "chat_threads.json"
+MAX_MESSAGES_PER_SESSION = 30  # caps model cost and abuse per browser session
 
 
 # ---------------------------------------------------------------------------
@@ -52,6 +53,7 @@ def init_session():
     st.session_state.setdefault("user_role", None)
     st.session_state.setdefault("conversation_id", None)
     st.session_state.setdefault("vector_store_ready", False)
+    st.session_state.setdefault("message_count", 0)
 
 
 def start_new_conversation():
@@ -92,6 +94,7 @@ def chat_round(user_input):
                    "Please start a new conversation for other questions.")
         return
 
+    st.session_state.message_count += 1
     result = get_agent().invoke(
         {"messages": [{"role": "user", "content": user_input}]},
         config=get_thread_config(st.session_state.user_email, st.session_state.conversation_id),
@@ -147,12 +150,17 @@ def main():
                     start_new_conversation()
                 st.success("Logged in")
                 st.rerun()
+            elif lockout_minutes_left(email):
+                st.error(f"Too many failed logins. Try again in {lockout_minutes_left(email)} minutes.")
             else:
                 st.error("Invalid email or password")
         return
 
-    # Sidebar: conversations
+    # Sidebar: logout + conversations
     with st.sidebar:
+        if st.button("Logout"):
+            st.session_state.clear()
+            st.rerun()
         st.header("Conversations")
         if st.button("Start new conversation"):
             start_new_conversation()
@@ -178,8 +186,12 @@ def main():
 
     render_history()
 
-    prompt = st.chat_input("Ask a question")
-    if prompt:
+    limit_reached = st.session_state.message_count >= MAX_MESSAGES_PER_SESSION
+    if limit_reached:
+        st.info(f"You've reached the limit of {MAX_MESSAGES_PER_SESSION} messages for this session. "
+                "Thanks for chatting! For anything else, please contact our support team.")
+    prompt = st.chat_input("Ask a question", disabled=limit_reached)
+    if prompt and not limit_reached:
         with st.chat_message("user"):
             st.markdown(prompt)
         with st.chat_message("assistant"):

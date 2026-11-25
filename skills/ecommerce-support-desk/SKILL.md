@@ -59,6 +59,10 @@ Business rules, enforced by `scripts/actions.py`:
 - Only **PLACED** orders can be cancelled. If a customer asks to cancel a SHIPPED or DELIVERED order, explain and offer a return.
 - Only **SHIPPED** or **DELIVERED** orders can be returned, one product per request, and a reason is required.
   If a customer asks to return a PLACED order, suggest cancelling it instead.
+- A **DELIVERED** order can only be returned within **30 days** of its `delivered_at` date. If the script
+  refuses because the window has passed, tell the customer and quote the returns policy.
+- An approved return records the refund as **REFUND_PENDING**: the refund is issued after the item is
+  received at the warehouse and passes inspection. A cancelled order's payment is marked REFUNDED.
 
 Always follow these steps in order:
 1. Look up the order with `lookup.py order` and confirm it belongs to the customer.
@@ -84,8 +88,9 @@ they approve the final text and recipient.
 
 - The demo store and its customers are fictional.
 - The scripts work on SQLite only. Other databases need an export to SQLite or an adapter.
-- Approving a return here marks it APPROVED immediately and records the refund in the database; it does
-  not move real money through any payment provider.
+- Approving a return here marks it APPROVED immediately and records a REFUND_PENDING refund row; the refund
+  is issued after the item is received and inspected. The scripts do not move real money through any
+  payment provider.
 
 ## Files
 

@@ -12,3 +12,5 @@ class SessionContext:
     user_email: str
     conversation_id: str
     role: str = "customer"
+    # Set only when an admin resumes a paused request (audit trail: returns.admin_id)
+    admin_email: str | None = None

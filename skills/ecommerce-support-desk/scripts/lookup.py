@@ -13,7 +13,7 @@ The database is opened in SQLite read-only mode; this script never writes.
 
 import argparse
 
-from _common import DEFAULT_DB, connect, fail, norm_email, out, rows
+from _common import DEFAULT_DB, connect, fail, has_column, norm_email, out, rows
 
 
 def customer(conn, email):
@@ -54,8 +54,9 @@ def main():
     elif a.command == "order":
         if a.id is None:
             fail("--id is required for 'order'.")
-        o = conn.execute("SELECT id, status, order_date, total_amount FROM orders WHERE id = ? AND user_id = ?",
-                         (a.id, uid)).fetchone()
+        delivered = "delivered_at" if has_column(conn, "orders", "delivered_at") else "NULL AS delivered_at"
+        o = conn.execute(f"SELECT id, status, order_date, {delivered}, total_amount FROM orders "
+                         "WHERE id = ? AND user_id = ?", (a.id, uid)).fetchone()
         if o is None:
             fail(f"Order #{a.id} was not found for {user['email']}.")
         items = rows(conn.execute(

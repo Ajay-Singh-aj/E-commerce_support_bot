@@ -6,7 +6,7 @@ The customer's email comes from runtime.context, never from the model.
 """
 
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from langchain.tools import ToolRuntime, tool
@@ -15,16 +15,32 @@ from langchain_bot.context import SessionContext
 
 DB_PATH = Path(__file__).resolve().parents[2] / "ecommerce.db"
 
+RETURN_WINDOW_DAYS = 30
+RETURN_POLICY = "You have 30 days from the date of delivery to ask for a return."  # policies/returns_policy.txt
+
 
 def _now():
     return datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
 
 
+def return_window_error(order_id, delivered_at, now=None):
+    """The refusal message if a DELIVERED order is past the return window, else None."""
+    if not delivered_at:
+        return None
+    now = now or datetime.now()
+    delivered = datetime.fromisoformat(delivered_at)
+    if now - delivered <= timedelta(days=RETURN_WINDOW_DAYS):
+        return None
+    days = (now - delivered).days
+    return (f"Order #{order_id} was delivered on {delivered.date().isoformat()} ({days} days ago), so it is "
+            f"outside the return window. Our returns policy: \"{RETURN_POLICY}\"")
+
+
 def _get_user_order(conn, user_email, order_id):
-    """The order (id, status, user_id) only if it belongs to this user."""
+    """The order (id, status, user_id, delivered_at) only if it belongs to this user."""
     return conn.execute(
         """
-        SELECT o.id, o.status, o.user_id
+        SELECT o.id, o.status, o.user_id, o.delivered_at
         FROM orders o JOIN users u ON u.id = o.user_id
         WHERE o.id = ? AND u.email = ?
         """,
@@ -90,6 +106,11 @@ def create_return_action(
     if status not in ("SHIPPED", "DELIVERED"):
         conn.close()
         return f"Order #{order_id} cannot be returned because its status is {status}."
+    if status == "DELIVERED":
+        too_late = return_window_error(order_id, order[3])
+        if too_late:
+            conn.close()
+            return too_late + " No return was created."
 
     item = conn.execute(
         """
@@ -117,12 +138,20 @@ def create_return_action(
 
     now = _now()
 
+    # Audit: which admin approved this return (set when the admin resumes the thread)
+    admin_id = None
+    if runtime.context.admin_email:
+        row = conn.execute(
+            "SELECT id FROM users WHERE email = ? AND role = 'admin'", (runtime.context.admin_email.strip().lower(),)
+        ).fetchone()
+        admin_id = row[0] if row else None
+
     cursor = conn.execute(
         """
-        INSERT INTO returns (order_id, order_item_id, user_id, reason, status, requested_at, resolved_at)
-        VALUES (?, ?, ?, ?, 'APPROVED', ?, ?)
+        INSERT INTO returns (order_id, order_item_id, user_id, reason, status, requested_at, resolved_at, admin_id)
+        VALUES (?, ?, ?, ?, 'APPROVED', ?, ?, ?)
         """,
-        (order_id, item_id, user_id, reason, now, now),
+        (order_id, item_id, user_id, reason, now, now, admin_id),
     )
     return_id = cursor.lastrowid
 
@@ -135,11 +164,12 @@ def create_return_action(
     )
     ticket_id = cursor.lastrowid
 
+    # The refund is issued only after the item is received and inspected, so it starts as REFUND_PENDING
     refund = round(quantity * unit_price, 2)
     conn.execute(
         """
         INSERT INTO payments (order_id, amount, status, payment_method, transaction_reference, paid_at)
-        SELECT ?, ?, 'REFUNDED', payment_method, ?, ? FROM payments WHERE order_id = ? LIMIT 1
+        SELECT ?, ?, 'REFUND_PENDING', payment_method, ?, ? FROM payments WHERE order_id = ? LIMIT 1
         """,
         (order_id, refund, f"REFUND-RETURN-{return_id}", now, order_id),
     )
@@ -149,7 +179,8 @@ def create_return_action(
 
     return (
         f"Return #{return_id} for '{exact_name}' in order #{order_id} is APPROVED. "
-        f"Refund of {refund:.2f} recorded. Ticket #{ticket_id} created."
+        f"A refund of {refund:.2f} is pending (REFUND_PENDING): it is issued after the item is received "
+        f"and inspected. Ticket #{ticket_id} created."
     )
 
 

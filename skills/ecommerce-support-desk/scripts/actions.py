@@ -8,15 +8,20 @@ Common option: --db PATH
 Rules (same as the ShopDesk web app):
   - only PLACED orders can be cancelled; the payment is marked REFUNDED
   - only SHIPPED or DELIVERED orders can be returned, one product per request
+  - a DELIVERED order can only be returned within 30 days of orders.delivered_at
   - a product can only have one open (PENDING/APPROVED) return per order line
+  - an approved return records the refund as REFUND_PENDING (issued after the item is received and inspected)
   - the order must belong to the given customer email
 Without --confirm the script only checks eligibility and prints what WOULD change.
 """
 
 import argparse
-from datetime import datetime
+from datetime import datetime, timedelta
 
-from _common import DEFAULT_DB, connect, fail, norm_email, out
+from _common import DEFAULT_DB, connect, fail, has_column, norm_email, out
+
+RETURN_WINDOW_DAYS = 30
+RETURN_POLICY = "You have 30 days from the date of delivery to ask for a return."  # policies/returns_policy.md
 
 
 def now():
@@ -24,12 +29,30 @@ def now():
 
 
 def owned_order(conn, email, order_id):
+    delivered = "o.delivered_at" if has_column(conn, "orders", "delivered_at") else "NULL AS delivered_at"
     r = conn.execute(
-        """SELECT o.id, o.status, o.user_id, o.total_amount FROM orders o JOIN users u ON u.id = o.user_id
-           WHERE o.id = ? AND u.email = ?""", (order_id, email)).fetchone()
+        f"""SELECT o.id, o.status, o.user_id, o.total_amount, {delivered}
+            FROM orders o JOIN users u ON u.id = o.user_id
+            WHERE o.id = ? AND u.email = ?""", (order_id, email)).fetchone()
     if r is None:
         fail(f"Order #{order_id} was not found for {email}.")
     return r
+
+
+def check_return_window(conn, o):
+    """Refuse DELIVERED orders delivered more than 30 days ago. Returns a note when it cannot check."""
+    if o["status"] != "DELIVERED":
+        return None
+    if not has_column(conn, "orders", "delivered_at"):
+        return "orders.delivered_at is missing in this database, so the 30-day return window was not checked."
+    if not o["delivered_at"]:
+        return "This DELIVERED order has no delivered_at date, so the 30-day return window was not checked."
+    delivered = datetime.fromisoformat(o["delivered_at"])
+    age = datetime.now() - delivered
+    if age > timedelta(days=RETURN_WINDOW_DAYS):
+        fail(f"Order #{o['id']} was delivered on {delivered.date().isoformat()} ({age.days} days ago), so it is "
+             f"outside the return window. Our returns policy: \"{RETURN_POLICY}\"")
+    return None
 
 
 def cancel(conn, email, order_id, confirm):
@@ -60,6 +83,7 @@ def create_return(conn, email, order_id, product, reason, confirm):
         fail(f"Order #{order_id} has not shipped yet (PLACED). Cancel it instead of returning it.")
     if o["status"] not in ("SHIPPED", "DELIVERED"):
         fail(f"Order #{order_id} is {o['status']} and cannot be returned.")
+    window_note = check_return_window(conn, o)
     if not reason or not reason.strip():
         fail("A return reason is required. Ask the customer why they are returning the item.")
     item = conn.execute(
@@ -77,8 +101,14 @@ def create_return(conn, email, order_id, product, reason, confirm):
     refund = round(item["quantity"] * item["unit_price"], 2)
     plan = {"action": "return", "order_id": order_id, "customer": email, "product": item["name"],
             "reason": reason.strip(), "refund_amount": refund,
-            "changes": ["new APPROVED return", "new REFUNDED payment row for the item amount",
+            "changes": ["new APPROVED return",
+                        "new REFUND_PENDING payment row for the item amount "
+                        "(refund issued after the item is received and inspected)",
                         "new RESOLVED ticket 'Return request for %s'" % item["name"]]}
+    if o["delivered_at"]:
+        plan["delivered_at"] = o["delivered_at"]
+    if window_note:
+        plan["note"] = window_note
     if not confirm:
         return out({"ok": True, "dry_run": True, "eligible": True, **plan})
     t = now()
@@ -93,7 +123,7 @@ def create_return(conn, email, order_id, product, reason, confirm):
             (o["user_id"], rid, f"Return request for {item['name']}", email, t, t)).lastrowid
         conn.execute(
             """INSERT INTO payments (order_id, amount, status, payment_method, transaction_reference, paid_at)
-               SELECT ?, ?, 'REFUNDED', payment_method, ?, ? FROM payments WHERE order_id = ? LIMIT 1""",
+               SELECT ?, ?, 'REFUND_PENDING', payment_method, ?, ? FROM payments WHERE order_id = ? LIMIT 1""",
             (order_id, refund, f"REFUND-RETURN-{rid}", t, order_id))
     out({"ok": True, "dry_run": False, **plan, "return_id": rid, "ticket_id": tid})
 
