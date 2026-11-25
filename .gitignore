@@ -29,6 +29,9 @@ chat_threads.json
 chroma_db/
 chroma_db.old-*/
 
+# Live eval results (tests/live_eval.py)
+evals/
+
 # Logs
 logs/
 *.log

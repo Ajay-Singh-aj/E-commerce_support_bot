@@ -712,7 +712,7 @@ def t25():
                                             "aistudio.google.com", "ollama.com", "OPENAI_API_KEY"))
     check("T25", "auto picks the right provider for every env combination",
           not wrong and helpful and described == "not configured"
-          and groq_desc == "groq / llama-3.3-70b-versatile" and override == "groq / llama-3.1-8b-instant",
+          and groq_desc == "groq / openai/gpt-oss-120b" and override == "groq / llama-3.1-8b-instant",
           f"{len(cases)} combos ok={not wrong} {wrong} | no-provider message lists free options={helpful} | "
           f"'{groq_desc}' | override '{override}'")
 
@@ -721,7 +721,7 @@ def t26():
     """Each provider builds the right LangChain chat model with its default model (offline)."""
     expected = {
         "openai": ("ChatOpenAI", "gpt-4o-mini", {"OPENAI_API_KEY": "sk-test"}),
-        "groq": ("ChatGroq", "llama-3.3-70b-versatile", {"GROQ_API_KEY": "gsk-test"}),
+        "groq": ("ChatGroq", "openai/gpt-oss-120b", {"GROQ_API_KEY": "gsk-test"}),
         "gemini": ("ChatGoogleGenerativeAI", "gemini-flash-latest", {"GOOGLE_API_KEY": "test"}),
         "ollama": ("ChatOllama", "qwen2.5:7b", {"OLLAMA_BASE_URL": "http://127.0.0.1:11434"}),
     }

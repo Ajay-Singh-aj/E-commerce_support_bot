@@ -87,12 +87,23 @@ and `LLM_MODEL` to override the model.
 | Provider | `.env` | Default model | Get a key | Cost / free tier |
 |---|---|---|---|---|
 | **OpenAI** | `OPENAI_API_KEY` | `gpt-4o-mini` | [platform.openai.com/api-keys](https://platform.openai.com/api-keys) | Paid, per token |
-| **Groq** | `GROQ_API_KEY` | `llama-3.3-70b-versatile` | [console.groq.com/keys](https://console.groq.com/keys) | Free tier with per-minute and per-day request/token limits; see [your limits](https://console.groq.com/settings/limits) |
+| **Groq** | `GROQ_API_KEY` | `openai/gpt-oss-120b` | [console.groq.com/keys](https://console.groq.com/keys) | Free tier with per-minute and per-day request/token limits; see [your limits](https://console.groq.com/settings/limits) |
 | **Gemini** | `GOOGLE_API_KEY` | `gemini-flash-latest` | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) | Free tier with per-minute and per-day limits; see [your limits](https://aistudio.google.com/rate-limit). Paid tier available |
 | **Ollama** | `OLLAMA_BASE_URL` (no key) | `qwen2.5:7b` | [ollama.com/download](https://ollama.com/download), then `ollama pull qwen2.5:7b` | Free, runs on your machine (8 GB+ RAM recommended) |
 
 Free-tier limits change often, so check the provider's limits page. ShopDesk retries rate-limited
-(HTTP 429) model calls with exponential backoff, but a busy free tier can still be slow.
+(HTTP 429) model calls with exponential backoff, but a busy free tier can still be slow (on Groq's free
+tier a cancel or return conversation took about 15-20 s in our live eval because of 429 waits).
+Which models a key can use also depends on the plan: Groq's free plan offers `openai/gpt-oss-120b`,
+`openai/gpt-oss-20b` and `qwen/qwen3.8-27b`, but not `llama-3.3-70b-versatile`. If you get
+"model does not exist or you do not have access to it", set `LLM_MODEL` to a model your key lists.
+
+To check answer quality on your provider, run the live eval (10 real conversations, about 25 model
+calls; results go to `evals/`):
+
+```
+uv run python tests/live_eval.py
+```
 `gemini-flash-latest` is Google's alias for its newest Flash model; if your account rejects it, set
 `LLM_MODEL` to a current Flash model from [Google's model list](https://ai.google.dev/gemini-api/docs/models).
 

@@ -24,7 +24,8 @@ AUTO_ORDER = ("openai", "groq", "gemini", "ollama")
 
 DEFAULT_MODELS = {
     "openai": "gpt-4o-mini",
-    "groq": "llama-3.3-70b-versatile",
+    # Groq's free plan serves gpt-oss / qwen models; llama-3.3-70b-versatile is not available on it
+    "groq": "openai/gpt-oss-120b",
     "gemini": "gemini-flash-latest",  # Google's alias for the newest Flash model
     "ollama": "qwen2.5:7b",
 }
