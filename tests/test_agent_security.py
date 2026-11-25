@@ -510,14 +510,143 @@ def t20():
           and PRIYA not in new_text and rotating, f"'{masked}' | rotating={rotating}")
 
 
+# ---------------------------------------------------------------------------
+# Demo dates are rebased to the build day (T21-T24 rebuild the database themselves)
+# ---------------------------------------------------------------------------
+
+def _init(no_shift=False):
+    if no_shift:
+        os.environ["SHOPDESK_NO_DATE_SHIFT"] = "1"
+    try:
+        db_init.init_database()
+    finally:
+        os.environ.pop("SHOPDESK_NO_DATE_SHIFT", None)
+
+
+def _delivered_ages(now):
+    rows = db("SELECT id, delivered_at FROM orders WHERE status = 'DELIVERED'")
+    return {oid: (now - datetime.fromisoformat(at)).total_seconds() / 86400 for oid, at in rows}
+
+
+def _all_dates():
+    out = {}
+    for table, columns in db_init.DEMO_DATE_COLUMNS.items():
+        for column in columns:
+            out[(table, column)] = db(f"SELECT id, {column} FROM {table} ORDER BY id")
+    return out
+
+
+def _sql_file_dates():
+    """The dates exactly as written in ecommerce_setup.sql (built in memory, no shift)."""
+    conn = sqlite3.connect(":memory:")
+    conn.executescript(db_init.SQL_SEED_PATH.read_text(encoding="utf-8"))
+    out = {}
+    for table, columns in db_init.DEMO_DATE_COLUMNS.items():
+        for column in columns:
+            out[(table, column)] = conn.execute(f"SELECT id, {column} FROM {table} ORDER BY id").fetchall()
+    conn.close()
+    return out
+
+
+def _chronology_ok():
+    """order_date < delivered_at < requested_at (<= resolved_at) for every demo return."""
+    rows = db("""SELECT o.order_date, o.delivered_at, r.requested_at, r.resolved_at
+                 FROM returns r JOIN orders o ON o.id = r.order_id WHERE r.id IN (1, 2)""")
+    return len(rows) == 2 and all(od < da < rq and (rs is None or rq <= rs) for od, da, rq, rs in rows)
+
+
+def _hitl_return_order_4(product="Voltcart LED Desk Lamp"):
+    thread, result = ask(f"Return the {product} from order 4", [
+        call("create_return_action", order_id=4, product_name=product, reason="Stopped working"),
+    ])
+    handle_interrupt(result, thread, PRIYA)
+    FAKE_MODEL.script = [AIMessage(content="done")]
+    return tool_outputs(decide_pending_action(pending_id(thread), "approve", ADMIN))[-1]
+
+
+def t21():
+    """After db_init the demo is recent: newest delivery <= 7 days old, every delivery < 30 days."""
+    _init()
+    ages = _delivered_ages(datetime.now())
+    newest, oldest = min(ages.values()), max(ages.values())
+    check("T21", "db_init rebases dates: newest delivery <= 7 days, all < 30 days",
+          0 <= newest <= 7 and oldest < 30 and len(ages) == 5,
+          "delivered ages (days): " + ", ".join(f"#{k}={v:.1f}" for k, v in sorted(ages.items())))
+
+
+def t22():
+    """On a freshly built demo DB a return on DELIVERED order 4 works through the HITL path."""
+    _init()
+    out = _hitl_return_order_4()
+    pay = db("SELECT status FROM payments WHERE order_id = 4 AND transaction_reference LIKE 'REFUND-RETURN-%'")
+    check("T22", "fresh demo DB: return on DELIVERED order 4 (HITL approve) works",
+          "APPROVED" in out and pay == [("REFUND_PENDING",)], out[:80])
+
+
+def t23():
+    """Time travel: build with fake today 2027-03-01; returns still work, event order unchanged."""
+    from langchain_bot import action_tools
+
+    fake_today = datetime(2027, 3, 1, 12, 0, 0)
+
+    class FakeDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fake_today
+
+    _init(no_shift=True)
+    before = _all_dates()
+    conn = sqlite3.connect(DB)
+    try:
+        offset = db_init.shift_demo_dates(conn, today=fake_today.date())
+    finally:
+        conn.close()
+    after = _all_dates()
+
+    def gap_ok(a, b):
+        return all(
+            (datetime.fromisoformat(y) - datetime.fromisoformat(x)).days == offset
+            for (_, x), (_, y) in zip(a, b) if x is not None
+        ) and [x is None for _, x in a] == [y is None for _, y in b]
+
+    every_column_shifted = all(gap_ok(before[key], after[key]) for key in before)
+    ages = _delivered_ages(fake_today)
+    real_datetime = action_tools.datetime
+    action_tools.datetime = FakeDateTime
+    try:
+        out = _hitl_return_order_4()
+    finally:
+        action_tools.datetime = real_datetime
+    check("T23", "time travel to 2027-03-01: shifted 96 days, order kept, return works",
+          offset == 96 and every_column_shifted and _chronology_ok()
+          and max(ages.values()) < 30 and min(ages.values()) <= 7 and "APPROVED" in out,
+          f"offset={offset} | all columns +{offset}d={every_column_shifted} | chronology={_chronology_ok()} | "
+          f"oldest delivery {max(ages.values()):.1f}d | return: {out[:30]}")
+
+
+def t24():
+    """SHOPDESK_NO_DATE_SHIFT=1 keeps every date exactly as in the SQL file; shift is a no-op for past days."""
+    _init(no_shift=True)
+    same = _all_dates() == _sql_file_dates()
+    conn = sqlite3.connect(DB)
+    try:
+        noop = db_init.shift_demo_dates(conn, today=datetime(2026, 11, 1).date())
+    finally:
+        conn.close()
+    still_same = _all_dates() == _sql_file_dates()
+    check("T24", "SHOPDESK_NO_DATE_SHIFT=1 -> dates exactly as in SQL; past 'today' -> no change",
+          same and noop == 0 and still_same,
+          f"identical to SQL file={same} | shift with today<reference returned {noop}, unchanged={still_same}")
+
+
 def main():
-    db_init.init_database()
-    # Make return tests independent of today's date: every delivered order arrived 3 days ago
-    db("UPDATE orders SET delivered_at = ? WHERE status = 'DELIVERED'", (days_ago(3),))
+    os.environ.pop("SHOPDESK_NO_DATE_SHIFT", None)
+    db_init.init_database()  # with the date shift: the return tests rely on recent demo deliveries
     tests = [
         ("T1", t1), ("T2", t2), ("T3", t3), ("T4", t4), ("T5", t5), ("T6", t6), ("T7", t7),
         ("T8", t8), ("T9", t9), ("T10", t10), ("T11", t11), ("T12", t12), ("T13", t13),
         ("T14", t14), ("T15", t15), ("T16", t16), ("T17", t17), ("T18", t18), ("T19", t19), ("T20", t20),
+        ("T21", t21), ("T22", t22), ("T23", t23), ("T24", t24),
     ]
     try:
         for test_id, fn in tests:

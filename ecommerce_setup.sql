@@ -1,6 +1,7 @@
 -- ShopDesk AI - demo database for "Voltcart", a fictional online electronics store.
 -- SQLite. All people, orders and payments below are invented sample data.
--- Reference date for the demo data: 2026-11-25. Amounts are in INR.
+-- Dates are relative to 2026-11-25 and are shifted to today when the database is built
+-- (db_init / setup_demo.py; disable with SHOPDESK_NO_DATE_SHIFT=1 or --no-shift). Amounts are in INR.
 
 DROP TABLE IF EXISTS email_logs;
 DROP TABLE IF EXISTS messages;
@@ -188,11 +189,11 @@ INSERT INTO products (id, name, description, price, stock_qty) VALUES
 -- total_amount = SUM(quantity * unit_price) of the order's items.
 
 INSERT INTO orders (id, user_id, status, order_date, total_amount) VALUES
-  (1, 1, 'DELIVERED', '2026-10-20T13:40:00', 4147.00),
+  (1, 1, 'DELIVERED', '2026-10-26T13:40:00', 4147.00),
   (2, 2, 'DELIVERED', '2026-10-27T20:00:00', 3898.00),
-  (3, 3, 'DELIVERED', '2026-10-20T08:55:00', 5048.00),
-  (4, 1, 'DELIVERED', '2026-10-26T18:25:00', 3098.00),
-  (5, 2, 'DELIVERED', '2026-10-25T18:55:00', 4596.00),
+  (3, 3, 'DELIVERED', '2026-11-16T08:55:00', 5048.00),
+  (4, 1, 'DELIVERED', '2026-11-12T18:25:00', 3098.00),
+  (5, 2, 'DELIVERED', '2026-11-08T18:55:00', 4596.00),
   (6, 3, 'SHIPPED', '2026-11-17T11:55:00', 6896.00),
   (7, 1, 'SHIPPED', '2026-11-18T18:40:00', 1997.00),
   (8, 2, 'SHIPPED', '2026-11-14T08:00:00', 3398.00),
@@ -262,11 +263,11 @@ INSERT INTO order_items (id, order_id, product_id, quantity, unit_price) VALUES
 -- One payment per order; cancelled orders are REFUNDED
 
 INSERT INTO payments (id, order_id, amount, status, payment_method, transaction_reference, paid_at) VALUES
-  (1, 1, 4147.00, 'PAID', 'NETBANKING', 'VC-20261020-0001', '2026-10-20T13:45:00'),
+  (1, 1, 4147.00, 'PAID', 'NETBANKING', 'VC-20261026-0001', '2026-10-26T13:45:00'),
   (2, 2, 3898.00, 'PAID', 'NETBANKING', 'VC-20261027-0002', '2026-10-27T20:05:00'),
-  (3, 3, 5048.00, 'PAID', 'CARD', 'VC-20261020-0003', '2026-10-20T09:00:00'),
-  (4, 4, 3098.00, 'PAID', 'UPI', 'VC-20261026-0004', '2026-10-26T18:30:00'),
-  (5, 5, 4596.00, 'PAID', 'CARD', 'VC-20261025-0005', '2026-10-25T19:00:00'),
+  (3, 3, 5048.00, 'PAID', 'CARD', 'VC-20261116-0003', '2026-11-16T09:00:00'),
+  (4, 4, 3098.00, 'PAID', 'UPI', 'VC-20261112-0004', '2026-11-12T18:30:00'),
+  (5, 5, 4596.00, 'PAID', 'CARD', 'VC-20261108-0005', '2026-11-08T19:00:00'),
   (6, 6, 6896.00, 'PAID', 'UPI', 'VC-20261117-0006', '2026-11-17T12:00:00'),
   (7, 7, 1997.00, 'PAID', 'CARD', 'VC-20261118-0007', '2026-11-18T18:45:00'),
   (8, 8, 3398.00, 'PAID', 'NETBANKING', 'VC-20261114-0008', '2026-11-14T08:05:00'),
@@ -286,13 +287,13 @@ INSERT INTO payments (id, order_id, amount, status, payment_method, transaction_
 -- Returns
 
 INSERT INTO returns (id, order_id, order_item_id, user_id, reason, status, requested_at, resolved_at, admin_id) VALUES
-  (1, 1, 1, 1, 'Stopped holding a charge after one week of use.', 'PENDING', '2026-11-04T10:20:00', NULL, NULL),
+  (1, 1, 1, 1, 'Stopped holding a charge after one week of use.', 'PENDING', '2026-11-06T10:20:00', NULL, NULL),
   (2, 2, 3, 2, 'Received the wrong colour.', 'APPROVED', '2026-11-06T15:00:00', '2026-11-07T11:30:00', 4);
 
 -- Support tickets linked to the returns
 
 INSERT INTO tickets (id, user_id, return_id, subject, status, thread_id, user_email, created_at, updated_at) VALUES
-  (1, 1, 1, 'Return request for Voltcart PowerCube 20000', 'OPEN', '3f6c2a9e-8d41-4b7a-9e21-5c0d7b1a4e10', 'priya.sharma@example.com', '2026-11-04T10:25:00', '2026-11-04T10:25:00'),
+  (1, 1, 1, 'Return request for Voltcart PowerCube 20000', 'OPEN', '3f6c2a9e-8d41-4b7a-9e21-5c0d7b1a4e10', 'priya.sharma@example.com', '2026-11-06T10:25:00', '2026-11-06T10:25:00'),
   (2, 2, 2, 'Return request for Voltcart Wireless Charging Pad', 'RESOLVED', 'b82e7d14-0c55-4f3a-a6d9-91e2f4c7b358', 'rahul.verma@example.com', '2026-11-06T15:05:00', '2026-11-07T11:35:00');
 
 -- Sample conversation (optional; chat history itself lives in the LangGraph checkpointer)

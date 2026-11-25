@@ -23,8 +23,9 @@ python scripts/setup_demo.py            # creates ~/.shopdesk/demo_store.db
 ```
 
 Tell the operator that this is a **fictional demo store** (Voltcart, prices in INR) and list the demo
-customers the script prints. Never pass `--force` unless the operator asks to reset the data, because it
-erases the existing database.
+customers the script prints. The demo dates are moved to today when the database is created, so recent
+orders are inside the 30-day return window. Never pass `--force` unless the operator asks to reset the
+data, because it erases the existing database.
 
 To use a real store, the operator points `--db` at a SQLite database with the schema in
 `reference/schema.md`, and `--dir` (or `SHOPDESK_POLICIES`) at a folder of their own policy files

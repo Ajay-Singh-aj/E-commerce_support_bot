@@ -11,10 +11,11 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
+      # setup-uv stopped publishing moving major tags (@v10 does not exist) after v7, so pin the release
       - name: Install uv
-        uses: astral-sh/setup-uv@v6
+        uses: astral-sh/setup-uv@v10.4.0
 
       - name: Install Python 3.11
         run: uv python install 3.11
@@ -24,3 +25,6 @@ jobs:
 
       - name: Agent security tests (no OpenAI key or Gmail needed)
         run: uv run python tests/test_agent_security.py
+
+      - name: Agent skill demo-date checks (standard library only)
+        run: uv run python tests/test_skill_demo_dates.py

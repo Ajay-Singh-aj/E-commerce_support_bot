@@ -14,7 +14,9 @@ It ships in two forms:
 | Folder | `app.py`, `app_admin.py`, `src/` | `skills/ecommerce-support-desk/` |
 
 Both run against **Voltcart**, a fictional demo electronics store (3 customers, 20 products, 20 orders,
-prices in INR). All demo data is invented. Swap in your own database and policy documents to go live.
+prices in INR). All demo data is invented. Demo dates are moved to today each time the demo database is
+built, so it always looks recent (set `SHOPDESK_NO_DATE_SHIFT=1` to keep the fixed dates). Swap in your
+own database and policy documents to go live.
 
 ## Features
 

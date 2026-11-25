@@ -39,7 +39,7 @@ def owned_order(conn, email, order_id):
     return r
 
 
-def check_return_window(conn, o):
+def check_return_window(conn, o, now=None):
     """Refuse DELIVERED orders delivered more than 30 days ago. Returns a note when it cannot check."""
     if o["status"] != "DELIVERED":
         return None
@@ -48,7 +48,7 @@ def check_return_window(conn, o):
     if not o["delivered_at"]:
         return "This DELIVERED order has no delivered_at date, so the 30-day return window was not checked."
     delivered = datetime.fromisoformat(o["delivered_at"])
-    age = datetime.now() - delivered
+    age = (now or datetime.now()) - delivered
     if age > timedelta(days=RETURN_WINDOW_DAYS):
         fail(f"Order #{o['id']} was delivered on {delivered.date().isoformat()} ({age.days} days ago), so it is "
              f"outside the return window. Our returns policy: \"{RETURN_POLICY}\"")
