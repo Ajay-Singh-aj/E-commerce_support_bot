@@ -1,6 +1,6 @@
 """Admin dashboard (Streamlit).
 
-Run: python -m uv run streamlit run app_admin.py --server.port 8502
+Run: uv run streamlit run app_admin.py --server.port 8502
 """
 
 import sqlite3
@@ -147,8 +147,12 @@ def main():
 
     if not st.session_state.services_ready:
         with st.spinner("Loading services (RAG + Gmail) for the agent..."):
-            initialize_vector_store()
-            get_agent()
+            try:
+                initialize_vector_store()
+                get_agent()
+            except Exception as error:
+                st.error(f"Initialization failed: {error}")
+                st.stop()
         st.session_state.services_ready = True
 
     st.caption(f"Logged in as {st.session_state.admin_email}")

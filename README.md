@@ -10,7 +10,7 @@ It ships in two forms:
 |---|---|---|
 | For | Stores that want a branded customer chat + admin console | Operators who already use Claude Code, Codex, Cursor or another SKILL.md agent |
 | Stack | Streamlit, LangChain 1.x, LangGraph, ChromaDB, SQLite, Gmail MCP | Python standard library only |
-| Needs | OpenAI API key, optional Gmail OAuth | Nothing: no API keys, no network calls |
+| Needs | OpenAI API key; Gmail OAuth optional (for email notifications) | Nothing: no API keys, no network calls |
 | Folder | `app.py`, `app_admin.py`, `src/` | `skills/ecommerce-support-desk/` |
 
 Both run against **Voltcart**, a fictional demo electronics store (3 customers, 20 products, 20 orders,
@@ -18,12 +18,12 @@ prices in INR). All demo data is invented. Swap in your own database and policy 
 
 ## Features
 
-- **Order intelligence:** order status, line items, payments, refunds, spend summaries, from SQL
+- **Order intelligence:** order status, line items, payments, refunds, spend summaries, from SQLite
 - **Policy answers grounded in your documents:** returns, refunds, shipping, cancellations (RAG over ChromaDB in the app, BM25 in the skill)
 - **Self-service actions with human-in-the-loop:** cancel PLACED orders, return SHIPPED/DELIVERED items; every request pauses for admin approval (approve, edit or reject)
 - **Admin console:** queue of pending requests, ticket view, one-click decisions that resume the customer's conversation
 - **Customer notifications:** request-received and decision emails through the Gmail MCP server, logged in `email_logs`
-- **Data isolation:** customers only ever see their own records; action tools check order ownership in code
+- **Data isolation:** every data tool is scoped in code to the logged-in customer (no free-form SQL); action tools re-check order ownership
 - **Persistent conversations:** LangGraph SQLite checkpointer, multiple chats per customer
 - **Audit logging:** every model and tool call logged to `logs/app.log`
 - **Hashed credentials:** PBKDF2-SHA256 password hashing
@@ -33,7 +33,7 @@ prices in INR). All demo data is invented. Swap in your own database and policy 
 ```
 Customer (Streamlit :8501) ──► LangChain 1.x agent (gpt-4o-mini)
                                  ├─ search_policies ─► ChromaDB ◄─ policies/*.txt
-                                 ├─ SQL toolkit ─────► SQLite (ecommerce.db)
+                                 ├─ customer data tools ► SQLite (ecommerce.db, read-only)
                                  ├─ Gmail MCP ───────► send_email
                                  └─ cancel / return ─► HumanInTheLoopMiddleware ─► pending_actions
 Admin (Streamlit :8502) ──► approve / edit / reject ─► Command(resume=…) on the same thread
@@ -42,17 +42,36 @@ State: LangGraph SqliteSaver (checkpoints.sqlite), thread id = user_email:conver
 
 ## Quick start - web app
 
-Requires Python 3.11+, [uv](https://docs.astral.sh/uv/) and Node.js (for the Gmail MCP server).
+Requires [uv](https://docs.astral.sh/uv/) (it installs Python 3.11+ for you). Node.js is only needed for
+the optional Gmail MCP server.
 
-```bash
-python -m uv sync
-copy .env.example .env            # add your OPENAI_API_KEY
-python -m uv run python -m langchain_bot.db_init
-npx -y @gongrzhe/server-gmail-autoauth-mcp auth     # one time; needs gcp-oauth.keys.json in %USERPROFILE%\.gmail-mcp
-
-python -m uv run streamlit run app.py                          # customer chat  -> http://localhost:8501
-python -m uv run streamlit run app_admin.py --server.port 8502 # admin console  -> http://localhost:8502
 ```
+uv sync
+uv run python -m langchain_bot.db_init
+```
+
+Create `.env` from the example and put your `OPENAI_API_KEY` in it:
+
+```
+copy .env.example .env        (Windows)
+cp .env.example .env          (macOS / Linux)
+```
+
+Optional, for email notifications: put `gcp-oauth.keys.json` in `~/.gmail-mcp/`
+(`%USERPROFILE%\.gmail-mcp\` on Windows) and authorise once. Without it the app runs and skips emails.
+
+```
+npx -y @gongrzhe/server-gmail-autoauth-mcp auth
+```
+
+Start the two apps in separate terminals:
+
+```
+uv run streamlit run app.py
+uv run streamlit run app_admin.py --server.port 8502
+```
+
+Customer chat: http://localhost:8501 · Admin console: http://localhost:8502
 
 Demo accounts (fictional):
 
@@ -65,8 +84,10 @@ Demo accounts (fictional):
 
 ## Quick start - agent skill
 
-```bash
-python tools/build_skill.py      # writes dist/ecommerce-support-desk.zip
+Build the zip (writes `dist/ecommerce-support-desk.zip`):
+
+```
+uv run python tools/build_skill.py
 ```
 
 Unzip into your agent's skills folder (for Claude Code: `~/.claude/skills/ecommerce-support-desk/`) and ask
@@ -90,7 +111,7 @@ src/langchain_bot/
     agent.py               Agent, Gmail MCP tools, checkpointer, HITL, resume_with_decision
     action_tools.py        cancel_order_action, create_return_action
     rag_tool.py            search_policies (ChromaDB)
-    sql_tools.py           SQL Database Toolkit
+    customer_tools.py      Customer-scoped data tools (orders, returns, tickets, spend, log_email)
     hitl_utils.py          Pending-action persistence
     auth.py                PBKDF2 login
     middleware.py          Model / tool call logging

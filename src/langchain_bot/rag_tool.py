@@ -40,23 +40,19 @@ def get_vector_store():
         return _vector_store
 
     embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
+    store = Chroma(persist_directory=str(CHROMA_DIR), embedding_function=embeddings)
 
-    if CHROMA_DIR.exists() and any(CHROMA_DIR.iterdir()):
+    # Check the document count, not just whether chroma_db/ has files: a build that failed
+    # part-way (bad API key, network error) leaves an empty collection behind.
+    if store._collection.count() > 0:
         print("Loaded existing vector store from chroma_db/")
-        _vector_store = Chroma(
-            persist_directory=str(CHROMA_DIR),
-            embedding_function=embeddings,
-        )
     else:
         print("Loading policy documents into a new vector store...")
         chunks = split_documents(load_policy_documents())
-        _vector_store = Chroma.from_documents(
-            documents=chunks,
-            embedding=embeddings,
-            persist_directory=str(CHROMA_DIR),
-        )
+        store.add_documents(chunks)
         print(f"Vector store created with {len(chunks)} chunks")
 
+    _vector_store = store
     return _vector_store
 
 
@@ -64,7 +60,7 @@ def get_vector_store():
 def search_policies(query: str) -> str:
     """Search the store's policy and FAQ documents: returns, refunds, shipping,
     cancellations. Use ONLY for general policy/FAQ questions.
-    Do NOT use it for the user's own orders, payments or returns - use the SQL tools."""
+    Do NOT use it for the user's own orders, payments or returns - use the customer data tools."""
     results = get_vector_store().similarity_search(query, k=4)
 
     if not results:

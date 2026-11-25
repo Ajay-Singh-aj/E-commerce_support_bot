@@ -1,6 +1,6 @@
 """Customer chat app (Streamlit).
 
-Run: python -m uv run streamlit run app.py
+Run: uv run streamlit run app.py
 """
 
 import json

@@ -104,6 +104,17 @@ def create_return_action(
         return f"Product '{product_name}' was not found in order #{order_id}."
 
     item_id, quantity, unit_price, exact_name = item
+
+    # One open return per order line, so the same item can't be refunded twice
+    existing = conn.execute(
+        "SELECT id, status FROM returns WHERE order_item_id = ? AND status IN ('PENDING', 'APPROVED')",
+        (item_id,),
+    ).fetchone()
+    if existing is not None:
+        conn.close()
+        return (f"'{exact_name}' in order #{order_id} already has return #{existing[0]} ({existing[1]}). "
+                "No new return was created.")
+
     now = _now()
 
     cursor = conn.execute(

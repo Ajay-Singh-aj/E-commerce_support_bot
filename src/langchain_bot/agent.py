@@ -1,6 +1,7 @@
 """The ShopDesk support agent.
 
-Tools: search_policies (RAG) + SQL toolkit + Gmail MCP tools + cancel/return action tools.
+Tools: search_policies (RAG) + customer data tools + Gmail MCP tools + cancel/return action tools.
+There is no free-form SQL: every data tool is scoped in code to the logged-in customer.
 Also: SQLite checkpointer, human-in-the-loop middleware, logging middleware.
 """
 
@@ -19,9 +20,9 @@ from langgraph.types import Command
 
 from langchain_bot.action_tools import get_action_tools
 from langchain_bot.context import SessionContext
+from langchain_bot.customer_tools import get_customer_tools
 from langchain_bot.middleware import get_logging_middleware
 from langchain_bot.rag_tool import search_policies
-from langchain_bot.sql_tools import get_sql_tools
 
 load_dotenv()
 
@@ -42,6 +43,24 @@ GMAIL_MCP_CONFIG = {
 async def load_gmail_tools():
     async with MCPAdapter(GMAIL_MCP_CONFIG) as adapter:
         return await adapter.list_tools()
+
+
+# False when the Gmail MCP server could not be started (e.g. OAuth not set up).
+# The agent then runs without email and the system prompt says so.
+EMAIL_AVAILABLE = True
+
+
+def _load_gmail_tools_or_none():
+    """Gmail is optional: if the MCP server fails to start, run without email tools."""
+    global EMAIL_AVAILABLE
+    try:
+        tools = [_sync_mcp_tool(tool) for tool in asyncio.run(load_gmail_tools())]
+    except Exception as error:  # MCP start-up errors arrive as an ExceptionGroup
+        EMAIL_AVAILABLE = False
+        print(f"WARNING: Gmail MCP unavailable, running without email ({type(error).__name__}: {error})")
+        return []
+    EMAIL_AVAILABLE = True
+    return tools
 
 
 def _sync_mcp_tool(tool):
@@ -74,52 +93,55 @@ Use search_policies for returns policy, return window, refunds and refund timeli
 cancellation policy and return shipping costs. Answer from the tool results.
 Do not use any tool for simple greetings.
 
-CAPABILITY 2 - Customer data (SQL tools)
-Use the SQL tools for the customer's orders, order items, payments, returns, tickets and spending.
-SECURITY RULE: always filter by the logged-in customer's email. Never return other users' rows.
-Examples:
-  SELECT o.id, o.status, o.order_date, o.total_amount
-  FROM orders o JOIN users u ON o.user_id = u.id
-  WHERE u.email = '{user_email}' ORDER BY o.order_date DESC LIMIT 5;
-
-  SELECT t.id, t.subject, t.status, t.created_at
-  FROM tickets t WHERE t.user_email = '{user_email}';
-Never select the password column. Only use SELECT, except the INSERT into email_logs described below.
-Use at most 3 SQL query attempts per question.
+CAPABILITY 2 - Customer data (customer data tools)
+These tools always return data for the logged-in customer only. They take no email argument.
+- get_my_orders(status, limit): the customer's orders, newest first (optional status filter)
+- get_order_details(order_id): one order's items (exact product names), payments and returns
+- get_my_returns(): the customer's return requests and their status
+- get_my_tickets(): the customer's support tickets
+- get_my_spend(): order count and total spent, excluding cancelled orders
+If the customer asks about another person's account or orders, refuse: you can only help with their own.
+If a tool says an order was not found, tell the customer it is not on their account.
 
 CAPABILITY 3 - Email (send_email)
 Use only send_email. The "to" list must contain only {user_email}.
 The subject and body must say what changed (order or return, and the new status).
-After each successful send_email, use the SQL tool to insert a row into email_logs:
-  INSERT INTO email_logs (user_id, email, subject, body_preview, email_type, sent_at)
-  VALUES ((SELECT id FROM users WHERE email = '{user_email}'), '{user_email}',
-          '<subject>', '<first 100 characters of body>', '<EMAIL_TYPE>', datetime('now'));
-If send_email fails, do not insert into email_logs and tell the customer the email could not be sent.
+After each successful send_email, call log_email(subject, body_preview, email_type) once.
+If send_email fails, do not call log_email and tell the customer the email could not be sent.
 Never call delete_email, batch_delete_emails, or any label or filter tools.
 
 CAPABILITY 4 - Cancel or return (cancel_order_action, create_return_action)
 Follow these steps, one tool per turn:
-1. Use SQL to verify the order belongs to the customer and check its status.
-   For a return, get the exact product name from the order items and ask for a reason if not given.
+1. Call get_order_details(order_id) to verify the order belongs to the customer and check its status.
+   For a return, use the exact product name from its items and ask for a reason if not given.
 2. Only PLACED orders can be cancelled. Only SHIPPED or DELIVERED orders can be returned.
    If the order is PLACED and the customer asks for a return, refuse and suggest cancelling instead.
-3. Send a short "request received" email with send_email, then insert the email_logs row
+3. Send a short "request received" email with send_email, then call log_email
    (email_type 'CANCEL_REQUEST' or 'RETURN_REQUEST').
 4. Call cancel_order_action or create_return_action once.
    These need admin approval. Never say the request is approved - tell the customer a human will review it.
 
 AFTER THE ADMIN DECIDES
 - If the action tool result says the order is cancelled or the return is approved: send_email with the
-  result (email_type 'CANCEL_APPROVED' or 'RETURN_APPROVED'), insert the email_logs row, then confirm to the customer.
+  result (email_type 'CANCEL_APPROVED' or 'RETURN_APPROVED'), call log_email, then confirm to the customer.
 - If the admin rejected the request: send_email saying it was rejected (email_type 'CANCEL_REJECTED' or
-  'RETURN_REJECTED'), insert the email_logs row, then tell the customer.
+  'RETURN_REJECTED'), call log_email, then tell the customer.
+"""
+
+
+NO_EMAIL_NOTE = """
+EMAIL IS NOT AVAILABLE in this deployment: there is no send_email tool. Skip every send_email and
+log_email step above and do not say an email was sent. Tell the customer the outcome in the chat instead.
 """
 
 
 @dynamic_prompt
 def support_prompt(request):
     """Fill the logged-in user's email into the system prompt."""
-    return SYSTEM_PROMPT.format(user_email=request.runtime.context.user_email)
+    prompt = SYSTEM_PROMPT.format(user_email=request.runtime.context.user_email)
+    if not EMAIL_AVAILABLE:
+        prompt += NO_EMAIL_NOTE
+    return prompt
 
 
 # ---------------------------------------------------------------------------
@@ -162,10 +184,10 @@ def get_hitl_middleware():
 # ---------------------------------------------------------------------------
 
 def create_support_agent():
-    gmail_tools = [_sync_mcp_tool(tool) for tool in asyncio.run(load_gmail_tools())]
+    gmail_tools = _load_gmail_tools_or_none()
     print("Gmail MCP tools:", [tool.name for tool in gmail_tools])
 
-    tools = [search_policies] + get_sql_tools() + gmail_tools + get_action_tools()
+    tools = [search_policies] + get_customer_tools() + gmail_tools + get_action_tools()
     middleware = [support_prompt, get_hitl_middleware()] + get_logging_middleware()
 
     return create_agent(
