@@ -9,6 +9,8 @@ SQLite checkpointer, resume_with_decision). Only the chat model and Gmail are re
 The tests write to ecommerce.db; db_init runs before and after, so the demo data ends up clean.
 """
 
+import contextlib
+import json
 import os
 import shutil
 import sqlite3
@@ -35,7 +37,7 @@ from langchain_core.tools import tool  # noqa: E402
 from datetime import datetime, timedelta  # noqa: E402
 
 from langchain_bot import agent as agent_mod  # noqa: E402
-from langchain_bot import auth, customer_tools, db_init, middleware, rag_tool  # noqa: E402
+from langchain_bot import auth, customer_tools, db_init, llm, middleware, rag_tool  # noqa: E402
 from langchain_bot.context import SessionContext  # noqa: E402
 from langchain_bot.hitl_utils import AlreadyDecidedError, decide_pending_action, handle_interrupt  # noqa: E402
 
@@ -63,6 +65,8 @@ class ScriptedChatModel(BaseChatModel):
 
     def _generate(self, messages, stop=None, run_manager=None, **kwargs):
         message = self.script.pop(0) if self.script else AIMessage(content="(no more scripted replies)")
+        if isinstance(message, Exception):  # scripted provider error, e.g. a 429
+            raise message
         return ChatResult(generations=[ChatGeneration(message=message)])
 
 
@@ -101,8 +105,9 @@ async def fake_load_gmail_tools():
     return [fake_mcp_send_email, delete_email, search_emails, read_email]
 
 
-agent_mod.ChatOpenAI = lambda **kwargs: FAKE_MODEL
+agent_mod.get_chat_model = lambda: FAKE_MODEL
 agent_mod.load_gmail_tools = fake_load_gmail_tools
+llm.RETRY_INITIAL_DELAY = 0.0  # no real sleeping in the 429 retry test
 
 
 # ---------------------------------------------------------------------------
@@ -350,22 +355,28 @@ def _stop_chroma():
 
 def t13():
     """Bug 1: an empty chroma_db/ left by a failed build is rebuilt, not reused."""
-    original_dir, original_embeddings = rag_tool.CHROMA_DIR, rag_tool.OpenAIEmbeddings
+    original = (rag_tool.CHROMA_DIR, rag_tool.get_embeddings, rag_tool.describe_embeddings)
     rag_tool.CHROMA_DIR = TMP / "chroma_db"
-    rag_tool.OpenAIEmbeddings = lambda **kwargs: FakeEmbeddings(size=16)
+    rag_tool.get_embeddings = lambda: FakeEmbeddings(size=16)
+    rag_tool.describe_embeddings = lambda: {"provider": "fake", "model": "fake-16"}
     rag_tool._vector_store = None
     try:
         empty = rag_tool.Chroma(persist_directory=str(rag_tool.CHROMA_DIR), embedding_function=FakeEmbeddings(size=16))
+        # A failed build of the SAME embeddings: metadata written, but no documents
+        (rag_tool.CHROMA_DIR / rag_tool.EMBEDDINGS_META).write_text(
+            json.dumps({"provider": "fake", "model": "fake-16"}), encoding="utf-8")
         empty_count = empty._collection.count()
         has_files = any(rag_tool.CHROMA_DIR.iterdir())
         store = rag_tool.get_vector_store()
         count = store._collection.count()
+        moved = list(TMP.glob("chroma_db.old-*"))
     finally:
-        rag_tool.CHROMA_DIR, rag_tool.OpenAIEmbeddings = original_dir, original_embeddings
+        rag_tool.CHROMA_DIR, rag_tool.get_embeddings, rag_tool.describe_embeddings = original
         rag_tool._vector_store = None
         _stop_chroma()  # Windows can't delete the temp folder while Chroma holds its sqlite file open
-    check("T13", "empty chroma_db/ from a failed build gets rebuilt",
-          has_files and empty_count == 0 and count > 0, f"before: files={has_files}, docs=0 | after: docs={count}")
+    check("T13", "empty chroma_db/ from a failed build gets rebuilt in place",
+          has_files and empty_count == 0 and count > 0 and not moved,
+          f"before: files={has_files}, docs=0 | after: docs={count} | moved aside: {len(moved)}")
 
 
 # ---------------------------------------------------------------------------
@@ -639,6 +650,199 @@ def t24():
           f"identical to SQL file={same} | shift with today<reference returned {noop}, unchanged={still_same}")
 
 
+# ---------------------------------------------------------------------------
+# Multi-provider LLM + embeddings (no network: the Ollama ping is mocked, keys are dummies)
+# ---------------------------------------------------------------------------
+
+PROVIDER_VARS = ("LLM_PROVIDER", "LLM_MODEL", "OPENAI_API_KEY", "GROQ_API_KEY", "GOOGLE_API_KEY",
+                 "OLLAMA_BASE_URL", "EMBEDDINGS_PROVIDER")
+
+
+@contextlib.contextmanager
+def provider_env(ollama_up=False, **values):
+    """Run with ONLY the given provider variables set, and a fake Ollama ping."""
+    saved = {name: os.environ.get(name) for name in PROVIDER_VARS}
+    real_ping = llm._ollama_available
+    try:
+        for name in PROVIDER_VARS:
+            os.environ.pop(name, None)
+        os.environ.update(values)
+        llm._ollama_available = lambda timeout=1.5: ollama_up
+        yield
+    finally:
+        llm._ollama_available = real_ping
+        for name, value in saved.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
+def t25():
+    """LLM_PROVIDER=auto picks the first available: OpenAI -> Groq -> Gemini -> Ollama."""
+    cases = [
+        ({"OPENAI_API_KEY": "k"}, False, "openai"),
+        ({"GROQ_API_KEY": "k"}, False, "groq"),
+        ({"GOOGLE_API_KEY": "k"}, False, "gemini"),
+        ({}, True, "ollama"),
+        ({"OPENAI_API_KEY": "k", "GROQ_API_KEY": "k", "GOOGLE_API_KEY": "k"}, True, "openai"),
+        ({"GROQ_API_KEY": "k", "GOOGLE_API_KEY": "k"}, True, "groq"),
+        ({"GOOGLE_API_KEY": "k"}, True, "gemini"),
+        ({"OPENAI_API_KEY": "your_openai_api_key_here", "GROQ_API_KEY": "k"}, False, "groq"),  # placeholder ignored
+        ({"OPENAI_API_KEY": "  ", "LLM_PROVIDER": "AUTO"}, True, "ollama"),
+    ]
+    wrong = []
+    for env, ollama_up, expected in cases:
+        with provider_env(ollama_up=ollama_up, **env):
+            got = llm.resolve_provider()
+        if got != expected:
+            wrong.append(f"{sorted(env)} ollama={ollama_up}: {got} != {expected}")
+    with provider_env(ollama_up=False):
+        try:
+            llm.resolve_provider()
+            none_error = ""
+        except llm.LLMConfigError as error:
+            none_error = str(error)
+        described = llm.describe_provider()
+    with provider_env(GROQ_API_KEY="k"):
+        groq_desc = llm.describe_provider()
+    with provider_env(GROQ_API_KEY="k", LLM_MODEL="llama-3.1-8b-instant"):
+        override = llm.describe_provider()
+    helpful = all(s in none_error for s in ("GROQ_API_KEY", "console.groq.com", "GOOGLE_API_KEY",
+                                            "aistudio.google.com", "ollama.com", "OPENAI_API_KEY"))
+    check("T25", "auto picks the right provider for every env combination",
+          not wrong and helpful and described == "not configured"
+          and groq_desc == "groq / llama-3.3-70b-versatile" and override == "groq / llama-3.1-8b-instant",
+          f"{len(cases)} combos ok={not wrong} {wrong} | no-provider message lists free options={helpful} | "
+          f"'{groq_desc}' | override '{override}'")
+
+
+def t26():
+    """Each provider builds the right LangChain chat model with its default model (offline)."""
+    expected = {
+        "openai": ("ChatOpenAI", "gpt-4o-mini", {"OPENAI_API_KEY": "sk-test"}),
+        "groq": ("ChatGroq", "llama-3.3-70b-versatile", {"GROQ_API_KEY": "gsk-test"}),
+        "gemini": ("ChatGoogleGenerativeAI", "gemini-flash-latest", {"GOOGLE_API_KEY": "test"}),
+        "ollama": ("ChatOllama", "qwen2.5:7b", {"OLLAMA_BASE_URL": "http://127.0.0.1:11434"}),
+    }
+    got = {}
+    for provider, (cls_name, model, keys) in expected.items():
+        with provider_env(ollama_up=True, LLM_PROVIDER=provider, **keys):
+            chat = llm.get_chat_model()
+        name = getattr(chat, "model_name", None) or getattr(chat, "model", None)
+        name = str(name).removeprefix("models/")
+        got[provider] = (type(chat).__name__, name, getattr(chat, "temperature", None))
+    ok = all(got[p][:2] == (c, m) and got[p][2] == 0.2 for p, (c, m, _) in expected.items())
+    check("T26", "openai/groq/gemini/ollama build the right model class + default, temp 0.2",
+          ok, " | ".join(f"{p}: {c} {m} t={t}" for p, (c, m, t) in got.items()))
+
+
+def t27():
+    """An explicit provider without its key (or a dead Ollama) fails with a clear message."""
+    messages = {}
+    for provider, env, needles in [
+        ("groq", {}, ("GROQ_API_KEY", "console.groq.com")),
+        ("gemini", {}, ("GOOGLE_API_KEY", "aistudio.google.com")),
+        ("openai", {"GROQ_API_KEY": "k"}, ("OPENAI_API_KEY", "platform.openai.com")),
+        ("ollama", {}, ("Ollama", "ollama pull")),
+        ("mistral", {}, ("Unknown LLM_PROVIDER",)),
+    ]:
+        with provider_env(ollama_up=False, LLM_PROVIDER=provider, **env):
+            try:
+                llm.get_chat_model()
+                messages[provider] = (False, "no error")
+            except llm.LLMConfigError as error:
+                messages[provider] = (all(n in str(error) for n in needles), str(error))
+    check("T27", "LLM_PROVIDER=groq without GROQ_API_KEY (and others) -> clear error",
+          all(ok for ok, _ in messages.values()), messages["groq"][1][:110])
+
+
+def t28():
+    """Changing the embeddings rebuilds the index and moves the old one aside (never deletes it)."""
+    original = (rag_tool.CHROMA_DIR, rag_tool.get_embeddings, rag_tool.describe_embeddings)
+    base = TMP / "embeddings_switch"
+    base.mkdir()
+    rag_tool.CHROMA_DIR = base / "chroma_db"
+    current = {"model": "fake-a", "size": 8}
+    rag_tool.get_embeddings = lambda: FakeEmbeddings(size=current["size"])
+    rag_tool.describe_embeddings = lambda: {"provider": "fake", "model": current["model"]}
+
+    def build():
+        rag_tool._vector_store = None
+        store = rag_tool.get_vector_store()
+        count = store._collection.count()
+        hits = store.similarity_search("refund", k=1)
+        meta = json.loads((rag_tool.CHROMA_DIR / rag_tool.EMBEDDINGS_META).read_text(encoding="utf-8"))
+        rag_tool._vector_store = None
+        _stop_chroma()  # release the files so the folder can be moved (Windows)
+        return count, bool(hits), meta
+
+    try:
+        first = build()
+        same_again = build()                       # unchanged embeddings: reuse, nothing moved
+        moved_after_same = list(base.glob("chroma_db.old-*"))
+        current.update(model="fake-b", size=16)    # different model AND vector size
+        switched = build()
+        moved = list(base.glob("chroma_db.old-*"))
+        old_meta = json.loads((moved[0] / rag_tool.EMBEDDINGS_META).read_text(encoding="utf-8")) if moved else None
+    finally:
+        rag_tool.CHROMA_DIR, rag_tool.get_embeddings, rag_tool.describe_embeddings = original
+        rag_tool._vector_store = None
+        _stop_chroma()
+    check("T28", "EMBEDDINGS change -> index rebuilt, old one moved to chroma_db.old-*",
+          first[0] > 0 and same_again[0] == first[0] and not moved_after_same
+          and switched[0] > 0 and switched[1] and switched[2]["model"] == "fake-b"
+          and len(moved) == 1 and old_meta == {"provider": "fake", "model": "fake-a"},
+          f"a: {first[0]} docs | same again: moved {len(moved_after_same)} | b (16-dim): {switched[0]} docs, "
+          f"search ok={switched[1]} | old kept: {[p.name[:23] for p in moved]} with {old_meta}")
+
+
+def t29():
+    """EMBEDDINGS_PROVIDER=auto: OpenAI if its key is set, else local; Gemini only when chosen."""
+    with provider_env(OPENAI_API_KEY="k", GOOGLE_API_KEY="k"):
+        with_openai = llm.describe_embeddings()
+    with provider_env(GROQ_API_KEY="k", GOOGLE_API_KEY="k"):
+        without_openai = llm.describe_embeddings()
+    with provider_env(GOOGLE_API_KEY="k", EMBEDDINGS_PROVIDER="gemini"):
+        gemini = llm.describe_embeddings()
+    with provider_env(EMBEDDINGS_PROVIDER="openai"):
+        try:
+            llm.describe_embeddings()
+            missing_key_error = False
+        except llm.LLMConfigError as error:
+            missing_key_error = "EMBEDDINGS_PROVIDER=local" in str(error)
+    check("T29", "embeddings auto: openai if key, else local; gemini only explicit",
+          with_openai == {"provider": "openai", "model": "text-embedding-3-small"}
+          and without_openai == {"provider": "local", "model": "BAAI/bge-small-en-v1.5"}
+          and gemini["provider"] == "gemini" and missing_key_error,
+          f"openai key -> {with_openai['provider']} | groq+google keys -> {without_openai['provider']} | "
+          f"explicit gemini -> {gemini['model']} | openai w/o key -> clear error={missing_key_error}")
+
+
+class FakeRateLimitError(Exception):
+    status_code = 429
+
+
+def t30():
+    """429s are retried with backoff; other errors are not retried."""
+    _, result = ask("hello", [FakeRateLimitError("Error code: 429 - rate limit reached"),
+                              FakeRateLimitError("429 Too Many Requests"),
+                              AIMessage(content="Hi! How can I help?")])
+    final = result["messages"][-1].content
+    FAKE_MODEL.script = []
+    try:
+        ask("hello again", [ValueError("invalid request"), AIMessage(content="should not be reached")])
+        other_raised = False
+    except ValueError:
+        other_raised = True
+    not_retried = FAKE_MODEL.script == [AIMessage(content="should not be reached")]
+    FAKE_MODEL.script = []
+    check("T30", "two 429s then success -> answered; a non-429 error is not retried",
+          final == "Hi! How can I help?" and other_raised and not_retried
+          and llm.is_rate_limit_error(FakeRateLimitError()) and not llm.is_rate_limit_error(ValueError("x")),
+          f"after 2x429: '{final}' | ValueError raised={other_raised}, not retried={not_retried}")
+
+
 def main():
     os.environ.pop("SHOPDESK_NO_DATE_SHIFT", None)
     db_init.init_database()  # with the date shift: the return tests rely on recent demo deliveries
@@ -647,6 +851,7 @@ def main():
         ("T8", t8), ("T9", t9), ("T10", t10), ("T11", t11), ("T12", t12), ("T13", t13),
         ("T14", t14), ("T15", t15), ("T16", t16), ("T17", t17), ("T18", t18), ("T19", t19), ("T20", t20),
         ("T21", t21), ("T22", t22), ("T23", t23), ("T24", t24),
+        ("T25", t25), ("T26", t26), ("T27", t27), ("T28", t28), ("T29", t29), ("T30", t30),
     ]
     try:
         for test_id, fn in tests:

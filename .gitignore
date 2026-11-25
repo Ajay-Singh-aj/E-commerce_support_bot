@@ -27,6 +27,7 @@ chat_threads.json
 
 # Generated vector database
 chroma_db/
+chroma_db.old-*/
 
 # Logs
 logs/

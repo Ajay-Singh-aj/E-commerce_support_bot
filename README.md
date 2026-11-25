@@ -10,7 +10,7 @@ It ships in two forms:
 |---|---|---|
 | For | Stores that want a branded customer chat + admin console | Operators who already use Claude Code, Codex, Cursor or another SKILL.md agent |
 | Stack | Streamlit, LangChain 1.x, LangGraph, ChromaDB, SQLite, Gmail MCP | Python standard library only |
-| Needs | OpenAI API key; Gmail OAuth optional (for email notifications) | Nothing: no API keys, no network calls |
+| Needs | ONE model key: OpenAI (paid) or Groq / Gemini (free), or a local Ollama; Gmail OAuth optional | Nothing: no API keys, no network calls |
 | Folder | `app.py`, `app_admin.py`, `src/` | `skills/ecommerce-support-desk/` |
 
 Both run against **Voltcart**, a fictional demo electronics store (3 customers, 20 products, 20 orders,
@@ -33,8 +33,8 @@ own database and policy documents to go live.
 ## Architecture (web app)
 
 ```
-Customer (Streamlit :8501) ──► LangChain 1.x agent (gpt-4o-mini)
-                                 ├─ search_policies ─► ChromaDB ◄─ policies/*.txt
+Customer (Streamlit :8501) ──► LangChain 1.x agent (OpenAI / Groq / Gemini / Ollama, see llm.py)
+                                 ├─ search_policies ─► ChromaDB ◄─ policies/*.txt (OpenAI / Gemini / local embeddings)
                                  ├─ customer data tools ► SQLite (ecommerce.db, read-only)
                                  ├─ Gmail MCP ───────► send_email
                                  └─ cancel / return ─► HumanInTheLoopMiddleware ─► pending_actions
@@ -52,7 +52,8 @@ uv sync
 uv run python -m langchain_bot.db_init
 ```
 
-Create `.env` from the example and put your `OPENAI_API_KEY` in it:
+Create `.env` from the example and put **ANY ONE** key in it (`GROQ_API_KEY` is free and quick to get),
+or run Ollama locally. See [Choose your model](#choose-your-model-free-or-paid) below.
 
 ```
 copy .env.example .env        (Windows)
@@ -74,6 +75,36 @@ uv run streamlit run app_admin.py --server.port 8502
 ```
 
 Customer chat: http://localhost:8501 · Admin console: http://localhost:8502
+
+Both pages show the model in use (for example `Model: groq / llama-3.3-70b-versatile`).
+
+## Choose your model (free or paid)
+
+ShopDesk runs on whichever key you have. With `LLM_PROVIDER=auto` (the default) it uses the first one
+available, in this order: OpenAI → Groq → Gemini → Ollama. Set `LLM_PROVIDER` to pick one explicitly,
+and `LLM_MODEL` to override the model.
+
+| Provider | `.env` | Default model | Get a key | Cost / free tier |
+|---|---|---|---|---|
+| **OpenAI** | `OPENAI_API_KEY` | `gpt-4o-mini` | [platform.openai.com/api-keys](https://platform.openai.com/api-keys) | Paid, per token |
+| **Groq** | `GROQ_API_KEY` | `llama-3.3-70b-versatile` | [console.groq.com/keys](https://console.groq.com/keys) | Free tier with per-minute and per-day request/token limits; see [your limits](https://console.groq.com/settings/limits) |
+| **Gemini** | `GOOGLE_API_KEY` | `gemini-flash-latest` | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) | Free tier with per-minute and per-day limits; see [your limits](https://aistudio.google.com/rate-limit). Paid tier available |
+| **Ollama** | `OLLAMA_BASE_URL` (no key) | `qwen2.5:7b` | [ollama.com/download](https://ollama.com/download), then `ollama pull qwen2.5:7b` | Free, runs on your machine (8 GB+ RAM recommended) |
+
+Free-tier limits change often, so check the provider's limits page. ShopDesk retries rate-limited
+(HTTP 429) model calls with exponential backoff, but a busy free tier can still be slow.
+`gemini-flash-latest` is Google's alias for its newest Flash model; if your account rejects it, set
+`LLM_MODEL` to a current Flash model from [Google's model list](https://ai.google.dev/gemini-api/docs/models).
+
+> **Data privacy:** on the **free (unpaid) Gemini tier, Google may use your prompts and responses to
+> improve its products, and human reviewers may read them** ([Gemini API terms](https://ai.google.dev/gemini-api/terms)).
+> For real customer data use OpenAI, the paid Gemini tier, or Ollama (data stays on your machine).
+> Check Groq's data policy for your plan before sending real customer data.
+
+**Policy-search embeddings** (`EMBEDDINGS_PROVIDER`): `auto` uses OpenAI when `OPENAI_API_KEY` is set,
+otherwise **local** FastEmbed (`BAAI/bge-small-en-v1.5`, no key, downloads about 70 MB once). Gemini
+embeddings are used only if you set `EMBEDDINGS_PROVIDER=gemini`, because of the free-tier data terms.
+When the embeddings change, the index is rebuilt automatically and the old one is kept as `chroma_db.old-<timestamp>/`.
 
 Demo accounts (fictional):
 
@@ -112,6 +143,7 @@ policies/                  Returns, shipping and FAQ documents (demo store)
 src/langchain_bot/
     agent.py               Agent, Gmail MCP tools, checkpointer, HITL, resume_with_decision
     action_tools.py        cancel_order_action, create_return_action
+    llm.py                 Model + embeddings provider selection (OpenAI, Groq, Gemini, Ollama, local)
     rag_tool.py            search_policies (ChromaDB)
     customer_tools.py      Customer-scoped data tools (orders, returns, tickets, spend, log_email)
     hitl_utils.py          Pending-action persistence

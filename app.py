@@ -14,6 +14,7 @@ from langchain_bot.agent import get_agent, get_thread_config
 from langchain_bot.auth import authenticate_user, lockout_minutes_left
 from langchain_bot.context import SessionContext
 from langchain_bot.hitl_utils import handle_interrupt, has_pending_action_for_thread
+from langchain_bot.llm import describe_provider
 from langchain_bot.rag_tool import initialize_vector_store
 
 THREADS_FILE = Path(__file__).resolve().parent / "chat_threads.json"
@@ -117,6 +118,7 @@ def main():
     st.set_page_config(page_title="ShopDesk AI · Customer Support", page_icon="🛒")
     st.title("ShopDesk AI")
     st.caption("24×7 order, return and policy support · demo store: Voltcart")
+    st.caption(f"Model: {describe_provider()}")
     load_dotenv()
     init_session()
 

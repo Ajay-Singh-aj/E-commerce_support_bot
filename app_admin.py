@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 from langchain_bot.agent import get_agent
 from langchain_bot.auth import authenticate_user, lockout_minutes_left
 from langchain_bot.hitl_utils import AlreadyDecidedError, decide_pending_action
+from langchain_bot.llm import describe_provider
 from langchain_bot.rag_tool import initialize_vector_store
 
 DB_PATH = Path(__file__).resolve().parent / "ecommerce.db"
@@ -129,6 +130,7 @@ def show_tickets():
 def main():
     st.set_page_config(page_title="ShopDesk AI · Admin", page_icon="🛠️", layout="wide")
     st.title("ShopDesk AI · Admin Console")
+    st.caption(f"Model: {describe_provider()}")
     load_dotenv()
     st.session_state.setdefault("admin_email", None)
     st.session_state.setdefault("services_ready", False)

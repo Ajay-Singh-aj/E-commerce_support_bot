@@ -14,13 +14,13 @@ from langchain.agents import create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, dynamic_prompt
 from langchain.mcp import MCPAdapter
 from langchain.tools import ToolRuntime, tool
-from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
 
 from langchain_bot.action_tools import get_action_tools
 from langchain_bot.context import SessionContext
 from langchain_bot.customer_tools import get_customer_tools
+from langchain_bot.llm import describe_provider, get_chat_model, get_retry_middleware
 from langchain_bot.middleware import get_logging_middleware
 from langchain_bot.rag_tool import search_policies
 
@@ -207,11 +207,15 @@ def create_support_agent():
     email_tools = _load_gmail_tools_or_none()
     print("Email tools:", [t.name for t in email_tools])
 
+    model = get_chat_model()  # OpenAI, Groq, Gemini or Ollama: see llm.py / .env
+    print("Model:", describe_provider())
+
     tools = [search_policies] + get_customer_tools() + email_tools + get_action_tools()
-    middleware = [support_prompt, get_hitl_middleware()] + get_logging_middleware()
+    # The retry middleware wraps the logging middleware, so every attempt (and each 429) is logged
+    middleware = [support_prompt, get_hitl_middleware(), get_retry_middleware()] + get_logging_middleware()
 
     return create_agent(
-        model=ChatOpenAI(model="gpt-4o-mini", temperature=0.2),
+        model=model,
         tools=tools,
         middleware=middleware,
         context_schema=SessionContext,
